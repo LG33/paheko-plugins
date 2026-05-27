@@ -75,12 +75,12 @@ var pm = document.querySelector('select[name="method_id"]');
 
 function toggleMethod() {
 	var o = pm.options[pm.selectedIndex];
-	document.querySelector('#f_amount').value = o.getAttribute('data-amount');
+	document.querySelector('#f_amount').value = o.dataset.max;
 	document.querySelector('.reference').style.display = (o.dataset.type == 0) ? null : 'none';
 }
 
 if (pm) {
-	pm.onchange = toggleMethod;
+	pm.addEventListener('change', toggleMethod);
 	toggleMethod();
 }
 
@@ -107,24 +107,33 @@ if (a = $('#f_amount')) {
 	function updatePaidAmount() {
 		var o = pm.options[pm.selectedIndex];
 
-		if (!o.dataset.type) {
-			return;
+		// Skip non-cash amounts
+		if (o.dataset.type != 1) {
+			diff = 0;
+		}
+		else {
+			var amount = g.getMoneyAsInt(a.value);
+			var max = g.getMoneyAsInt(o.dataset.max);
+			var diff = amount - max;
+
+			if (amount < 0) {
+				diff = 0;
+			}
 		}
 
-		var max = g.getMoneyAsInt(o.dataset.amount);
-		var diff = g.getMoneyAsInt(a.value) - max;
+		g.toggle('.payment .submit', diff <= 0);
+		g.toggle('.payment .toomuch', diff > 0);
 
-		g.toggle('form.payment .submit', diff <= 0);
-		g.toggle('form.payment .toomuch', diff > 0);
-
-		document.querySelector('form.payment .toomuch b').innerText = g.formatMoney(diff);
+		document.querySelector('.payment .toomuch b').innerText = g.formatMoney(diff);
 	}
 
 	a.addEventListener('keyup', updatePaidAmount);
 
-	document.querySelector('form.payment .toomuch button').onclick = () => {
+	pm.addEventListener('change', updatePaidAmount);
+
+	document.querySelector('.payment .toomuch button').onclick = () => {
 		var o = pm.options[pm.selectedIndex];
-		a.value = o.dataset.amount;
+		a.value = o.dataset.max;
 		updatePaidAmount();
 	};
 }

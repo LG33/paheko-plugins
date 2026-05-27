@@ -9,6 +9,7 @@ use Paheko\Plugin\Chat\Entities\User;
 
 use Paheko\Files\Files;
 use Paheko\Users\Session;
+use Paheko\Utils;
 use Paheko\Template;
 use Paheko\UserTemplate\CommonFunctions;
 use Paheko\UserTemplate\CommonModifiers;
@@ -18,6 +19,7 @@ function chat_avatar(array $params): string
 {
 	$avatar_url = '/user/avatar/';
 	$object = $params['object'];
+	$is_logged = Session::getInstance()->isLogged();
 
 	if ($object instanceof User) {
 		$id = $object->id;
@@ -40,7 +42,7 @@ function chat_avatar(array $params): string
 	$out = '<img src="' . $avatar_url . '" />';
 	$link = '%s';
 
-	if (isset($params['direct'])) {
+	if (isset($params['direct']) && $is_logged) {
 		$href = sprintf('./?with=%d', $id);
 		$link = sprintf('<a href="%s" target="_parent">%%s</a>', htmlspecialchars($href), $out);
 	}
@@ -48,7 +50,7 @@ function chat_avatar(array $params): string
 	$out = '<figure class="chat-avatar">' . $out . '</figure>';
 
 	if (!empty($params['name']) && $name) {
-		$out .= htmlspecialchars($name);
+		$out .= sprintf('<b>%s</b>', htmlspecialchars($name));
 	}
 
 	if (!empty($params['online'])) {
@@ -203,22 +205,38 @@ function chat_message_html($message, User $me, bool &$first = false): string
 
 	if ($message->type !== Message::TYPE_DELETED) {
 		$out .= '<footer>';
-		// TODO
-		$out .= CommonFunctions::linkbutton(['shape' => 'link', 'title' => 'Permalien', 'label' => '', 'target' => '_blank', 'href' => sprintf('./?id=%d&focus=%d#msg-%2$d', $message->id_channel, $message->id)]);
-
-		if ($message->id_user === $me->id || $is_admin) {
-			if ($message->type === Message::TYPE_TEXT) {
-				// TODO
-				//$out .= CommonFunctions::button(['shape' => 'edit', 'title' => 'Éditer', 'data-action' => 'edit',]);
-			}
-
+		if ($me->id_user && ($message->id_user === $me->id || $is_admin)) {
+			// TODO: edit dialog with title, and ability to change text if message is text
+			/*
+			$out .= CommonFunctions::linkbutton([
+				'shape'  => 'edit',
+				'title'  => 'Éditer',
+				'href'   => Utils::getLocalURL('!/p/chat/edit.php?id=' . $message->id),
+				'target' => '_dialog',
+				'label'  => '',
+			]);
+			*/
 			$out .= CommonFunctions::button(['shape' => 'delete', 'title' => 'Supprimer', 'data-action' => 'delete']);
 		}
 
-		//$out .= CommonFunctions::button(['shape' => 'chat', 'title' => 'Répondre', 'data-action' => 'reply']);
+		//$out .= CommonFunctions::button(['shape' => 'reply', 'title' => 'Répondre', 'data-action' => 'reply']);
+
 		$out .= CommonFunctions::button(['shape' => 'smile', 'title' => 'Réaction', 'data-action' => 'react']);
-		$out .= '<button class="react">👍</button>';
-		$out .= '<button class="react">❤️</button>';
+		$out .= '<button class="react" title="Mettre un pouce">👍</button>';
+		$out .= '<button class="react" title="Mettre un cœur">❤️</button>';
+
+		/*
+		// TODO
+		$out .= CommonFunctions::linkbutton([
+			'shape'       => 'link',
+			'title'       => 'Permalien',
+			'label'       => '',
+			'target'      => '_blank',
+			'href'        => sprintf('?id=%d&focus=%d#msg-%2$d', $message->id_channel, $message->id),
+			'data-action' => 'permalink',
+		]);
+		*/
+
 		$out .= '</footer>';
 	}
 

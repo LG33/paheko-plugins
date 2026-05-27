@@ -34,18 +34,35 @@ class TabItem extends Entity
 	protected ?int $id_fee = null;
 	protected ?int $id_subscription = null;
 
+	/**
+	 * This is for when we have an item and children items, ie. an annual subscription
+	 * bringing a mandatory federal fee
+	 */
+	protected ?int $id_parent_item = null;
+
+	/**
+	 * Used for payoff/credit payments, to link item with method
+	 */
+	protected ?int $id_method = null;
+
 	protected ?Product $_product = null;
 
 	const TYPE_PRODUCT = 0;
 	const TYPE_PAYOFF = 1;
+	const TYPE_CREDIT = 2;
 
 	const PRICING_QTY = 0;
 	const PRICING_QTY_WEIGHT = 1;
+	const PRICING_SINGLE = 2;
 
 	public function selfCheck(): void
 	{
-		$this->assert(in_array($this->type, [self::TYPE_PAYOFF, self::TYPE_PRODUCT], true));
-		$this->assert(in_array($this->pricing, [self::PRICING_QTY, self::PRICING_QTY_WEIGHT], true));
+		$this->assert(in_array($this->type, [self::TYPE_PRODUCT, self::TYPE_PAYOFF, self::TYPE_CREDIT], true));
+		$this->assert(in_array($this->pricing, [self::PRICING_QTY, self::PRICING_QTY_WEIGHT, self::PRICING_SINGLE], true));
+
+		if ($this->type === self::TYPE_CREDIT || $this->type === self::TYPE_PAYOFF) {
+			$this->assert(!is_null($this->id_method));
+		}
 	}
 
 	public function save(bool $selfcheck = true): bool
@@ -79,5 +96,10 @@ class TabItem extends Entity
 		}
 
 		$this->set('total', $total);
+	}
+
+	public function canChangeQty(): bool
+	{
+		return $this->pricing !== self::PRICING_SINGLE;
 	}
 }

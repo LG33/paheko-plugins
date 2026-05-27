@@ -6,7 +6,9 @@ use Paheko\Plugin\PIM\ChangesTracker;
 
 use Paheko\DB;
 use Paheko\Entity;
+use Paheko\UserException;
 use Paheko\Utils;
+
 use KD2\DB\Date;
 use KD2\Graphics\Image;
 use DateTime;
@@ -21,16 +23,16 @@ class Contact extends Entity
 	protected ?int $id = null;
 	protected int $id_user;
 	protected string $uri;
-	protected string $first_name;
-	protected ?string $last_name;
-	protected ?string $title;
-	protected ?string $mobile_phone;
-	protected ?string $phone;
-	protected ?string $address;
-	protected ?string $email;
-	protected ?string $web;
-	protected ?string $notes;
-	protected ?Date $birthday;
+	protected ?string $first_name = null;
+	protected ?string $last_name = null;
+	protected ?string $title = null;
+	protected ?string $mobile_phone = null;
+	protected ?string $phone = null;
+	protected ?string $address = null;
+	protected ?string $email = null;
+	protected ?string $web = null;
+	protected ?string $notes = null;
+	protected ?Date $birthday = null;
 	protected ?string $raw = null;
 	protected DateTime $updated;
 	protected bool $archived = false;
@@ -43,8 +45,10 @@ class Contact extends Entity
 		parent::selfCheck();
 
 		$this->assert(strlen($this->uri) && strlen($this->uri) < 255, 'Invalid URI');
-		$this->assert(is_null($this->raw) || strlen($this->raw) <= 1024*50, 'Raw event data is too large');
-		$this->assert(is_null($this->first_name) || strlen(trim($this->first_name)), 'Le prénom est obligatoire');
+		$this->assert(!isset($this->raw) || strlen($this->raw) <= 1024*50, 'Raw event data is too large');
+		$this->assert(isset($this->first_name) || isset($this->last_name), 'Le prénom ou le nom doivent être renseignés');
+		$this->assert(!isset($this->first_name) || mb_strlen(trim($this->first_name)), 'Le prénom est vide');
+		$this->assert(!isset($this->last_name) || mb_strlen(trim($this->first_name)), 'Le nom est vide');
 	}
 
 	public function save(bool $selfcheck = true): bool
@@ -221,6 +225,28 @@ class Contact extends Entity
 		return $vcard->serialize();
 	}
 
+	protected function getBinaryValue(VObject\Property $p): ?string
+	{
+		$type = $p->getValueType();
+		$value = $p->getValue();
+
+		if ($type === 'URI') {
+			if (!preg_match('/^data:image\/(?:jpe?g|gif|png|webp|svg\+xml);base64,/', $value, $match)) {
+				return null;
+			}
+
+			$value = substr($value, strlen($match[0]));
+			$value = base64_decode($value);
+			return $value;
+		}
+		elseif ($type === 'BINARY') {
+			return $value;
+		}
+		else {
+			return null;
+		}
+	}
+
 	public function importVCard($obj): void
 	{
 		if (is_string($obj)) {
@@ -228,10 +254,13 @@ class Contact extends Entity
 		}
 
 		if (!empty($obj->PHOTO)) {
-			if (!$this->exists()
-				|| $this->getPhotoHash() !== md5($obj->PHOTO->getValue())) {
+			$value = $this->getBinaryValue($obj->PHOTO);
+
+			if ($value !== null
+				&& (!$this->exists() || $this->getPhotoHash() !== md5($value)))
+			{
 				try {
-					$i = Image::createFromBlob($obj->PHOTO->getValue());
+					$i = Image::createFromBlob($value);
 					$i->cropResize(200, 200);
 					$this->_photo = $i->output('webp', true);
 					$this->_has_photo = true;
@@ -248,10 +277,6 @@ class Contact extends Entity
 		// No name: no contact
 		if (!$name) {
 			return;
-		}
-
-		//	var_dump($name->getValue()); exit;
-		if (strpos($obj->N->getValue(), 'rustine') !== false) {
 		}
 
 		$name = explode(';', $name->getValue());

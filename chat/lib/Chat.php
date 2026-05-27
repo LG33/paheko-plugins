@@ -6,6 +6,7 @@ use Paheko\Plugin\Chat\Entities\Channel;
 use Paheko\Plugin\Chat\Entities\User;
 use Paheko\Plugin\Chat\Entities\Message;
 use Paheko\Users\Session;
+use Paheko\Users\Users as PahekoMembers;
 use Paheko\DB;
 use Paheko\UserException;
 
@@ -23,6 +24,12 @@ class Chat
 
 		if (!$name || !preg_match('!^[a-z][a-z0-9_]{1,15}$!i', $name)) {
 			throw new UserException('Pseudonyme invalide');
+		}
+
+		$db = DB::getInstance();
+
+		if ($db->test(User::TABLE, 'name = ?', $name)) {
+			throw new UserException('Ce pseudo est déjà pris, merci d\'en choisir un autre.');
 		}
 
 		$user = new User;
@@ -140,6 +147,34 @@ class Chat
 	}
 
 	/**
+	 * Create a channel with a member user, not a chat user
+	 */
+	static public function getDirectChannelUser(User $me, int $user_id): ?Channel
+	{
+		$db = DB::getInstance();
+		$recipient_id = $db->firstColumn('SELECT id FROM plugin_chat_users WHERE id_user = ?;', $user_id);
+
+		// Create chat user first
+		if (!$recipient_id) {
+			$member = PahekoMembers::get($user_id);
+
+			if (!$member) {
+				throw new UserException('Ce membre n\'existe pas;');
+			}
+
+			$user = new User;
+			$user->import([
+				'id_user'      => $member->id(),
+				'name'         => $member->name(),
+			]);
+			$user->save();
+			$recipient_id = $user->id();
+		}
+
+		return self::getDirectChannel($me, $recipient_id);
+	}
+
+	/**
 	 * Create or return an existing channel between two users of an existing channel
 	 */
 	static public function getDirectChannel(User $me, int $recipient_id): ?Channel
@@ -171,8 +206,8 @@ class Chat
 			INNER JOIN plugin_chat_users_channels a ON a.id_channel = c.id AND a.id_user = ?
 			INNER JOIN plugin_chat_users_channels b ON b.id_channel = c.id AND b.id_user = ?
 			WHERE c.access = ? GROUP BY c.id LIMIT 1;',
-			$me->id,
-			$recipient->id,
+			min($me->id, $recipient->id),
+			max($me->id, $recipient->id),
 			Channel::ACCESS_DIRECT
 		);
 
@@ -184,11 +219,10 @@ class Chat
 			$channel->save();
 
 			$channel->addUser($me);
-
-			// Don't add myself twice if the channel is with myself
-			if ($recipient->id !== $me->id) {
-				$channel->addUser($recipient);
-			}
+			$channel->addUser($recipient);
+		}
+		else {
+			$channel->setPresenceForAll(true);
 		}
 
 		return $channel;
@@ -226,19 +260,25 @@ class Chat
 			$private_access = sprintf('OR access = \'%s\'', Channel::ACCESS_PRIVATE);
 		}
 
-		$sql = sprintf('SELECT *,
-			CASE WHEN access = \'%s\' THEN (
-				SELECT u.name FROM plugin_chat_users u
-				INNER JOIN plugin_chat_users_channels uc ON uc.id_channel = c.id AND uc.id_user = u.id
-				ORDER BY u.id != %d DESC LIMIT 1
-			) ELSE name END AS name
-			FROM @TABLE c WHERE access = \'%s\' %s OR id IN (SELECT id_channel FROM plugin_chat_users_channels WHERE id_user = %2$d)
-			ORDER BY access = \'direct\', name COLLATE NOCASE;',
-			Channel::ACCESS_DIRECT,
-			$user->id,
-			Channel::ACCESS_PUBLIC,
-			$private_access);
-		return EM::getInstance(Channel::class)->all($sql);
+		$sql = sprintf('SELECT * FROM (
+			SELECT id, access, name,
+				(SELECT 1 FROM plugin_chat_messages WHERE id > uc.last_seen_message_id LIMIT 1) AS has_new_messages
+				FROM plugin_chat_channels c
+				LEFT JOIN plugin_chat_users_channels uc ON uc.id_channel = c.id AND uc.id_user = %2$d
+				WHERE access = \'public\' %s
+			UNION ALL
+			SELECT c.id, c.access,
+				CASE WHEN uc1.id_user = uc2.id_user THEN NULL ELSE u2.name END,
+				(SELECT 1 FROM plugin_chat_messages WHERE id > uc1.last_seen_message_id LIMIT 1) AS has_new_messages
+				FROM plugin_chat_channels c
+				INNER JOIN plugin_chat_users_channels uc1 ON uc1.id_channel = c.id AND uc1.presence = 1 AND uc1.id_user = %d
+				INNER JOIN plugin_chat_users_channels uc2 ON uc2.id_channel = uc1.id_channel AND uc2.rowid != uc1.rowid AND uc2.presence = 1
+				INNER JOIN plugin_chat_users u2 ON u2.id = uc2.id_user
+				WHERE c.access = \'direct\'
+			GROUP BY c.id)
+			ORDER BY access = \'direct\', name COLLATE NOCASE;', $private_access, $user->id);
+
+		return DB::getInstance()->get($sql);
 	}
 
 	static public function getUsersNames(array $ids): array

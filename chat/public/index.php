@@ -19,6 +19,13 @@ $channel = null;
 if ($_GET['id'] ?? null) {
 	$channel = Chat::getChannel((int)$_GET['id'], $me);
 }
+elseif ($session->isLogged() && ($_GET['with_user'] ?? null)) {
+	$channel = Chat::getDirectChannelUser($me, (int)$_GET['with_user']);
+
+	if (!$channel) {
+		throw new ValidationException('No valid channel provided', 400);
+	}
+}
 elseif ($_GET['with'] ?? null) {
 	$channel = Chat::getDirectChannel($me, (int)$_GET['with']);
 
@@ -83,7 +90,7 @@ $recipient = $channel->getRecipient($me);
 $layout = $me->isAnonymous() ? 'public' : null;
 
 $tpl = Template::getInstance();
-$tpl->assign(compact('messages', 'channel', 'channels', 'csrf_key', 'recipient', 'me', 'layout'));
+$tpl->assign(compact('messages', 'channel', 'channels', 'csrf_key', 'recipient', 'me', 'layout', 'plugin'));
 $tpl->display(PLUGIN_ROOT . '/templates/chat.tpl');
 
 if (time() % 10 == 0) {

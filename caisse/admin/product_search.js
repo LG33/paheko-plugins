@@ -3,9 +3,10 @@ var q = document.querySelector('input[name="q"]');
 
 if (q) {
 	var q_timeout;
+	var search;
 
 	q.onkeyup = (e) => {
-		if (e.key === 'Enter' && (a = document.querySelector('.products section button:not([hidden])'))) {
+		if (search && e.key === 'Enter' && (a = document.querySelector('.products section button:not([hidden])'))) {
 			a.click();
 			return;
 		}
@@ -16,7 +17,7 @@ if (q) {
 	};
 
 	function searchProduct() {
-		var search = g.normalizeString(q.value);
+		search = g.normalizeString(q.value);
 		var code = q.value.replace(/\s/, '');
 
 		// Try to match barcodes
@@ -65,7 +66,10 @@ if (q) {
 		g.toggle('.pos .products ul', search.length === 0);
 	}
 
-	q.focus();
+	if (!('ontouchstart' in window)) {
+		q.focus();
+	}
+
 	enableBarcodeScanner();
 }
 
@@ -74,11 +78,11 @@ function enableBarcodeScanner()
 	var barcode_btn = $('#scanbarcode');
 
 	if (!('BarcodeDetector' in window)) {
-			window['BarcodeDetector'] = barcodeDetectorPolyfill.BarcodeDetectorPolyfill;
 		if (window['barcodeDetectorPolyfill']) {
+			window['BarcodeDetector'] = barcodeDetectorPolyfill.BarcodeDetectorPolyfill;
 		}
 		else {
-			//return;
+			return;
 		}
 	}
 

@@ -32,10 +32,25 @@ class Session extends Entity
 	protected \DateTime $opened;
 	protected ?\DateTime $closed;
 	protected string $open_user;
-	protected int $open_amount;
-	protected ?int $close_amount;
 	protected ?string $close_user;
-	protected ?int $error_amount;
+	protected ?int $result = null;
+	protected ?int $nb_tabs = null;
+
+	protected array $_balances = [];
+
+	public function balance(int $id_method)
+	{
+		$this->_balances[$id_method] ??= EntityManager::findOne(SessionBalance::class, 'SELECT * FROM @TABLE WHERE id_session = ? AND id_method = ?;', $this->id(), $id_method);
+
+		if (!isset($this->_balances[$id_method])) {
+			$balance = new SessionBalance;
+			$balance->set('id_session', $this->id());
+			$balance->set('id_method', $id_method);
+			$this->_balances[$id_method] = $balance;
+		}
+
+		return $this->_balances[$id_method];
+	}
 
 	public function hasOpenNotes(): bool
 	{
@@ -55,7 +70,7 @@ class Session extends Entity
 			WHERE t.session = ? AND t.user_id IS NULL AND ti.id_fee IS NOT NULL;'), $this->id());
 	}
 
-	public function close(string $user_name, int $amount, ?bool $confirm_error, array $payments)
+	public function close(string $user_name, array $user_balances, array $payments)
 	{
 		$db = DB::getInstance();
 
@@ -69,7 +84,7 @@ class Session extends Entity
 			throw new UserException(sprintf("Les notes suivantes comportent une inscription à une activité mais ne sont pas liées à un membre : %s\nMerci de créer une fiche membre et associer la note au membre.", implode(', ', $missing)));
 		}
 
-		$payments = array_map(function ($a) { return (int) $a; }, $payments);
+		$payments = array_map('intval', $payments);
 		$payments = implode(',', $payments);
 
 		$check_payments = $db->firstColumn(sprintf(POS::sql('SELECT COUNT(*) FROM @PREFIX_tabs_payments tp
@@ -81,21 +96,39 @@ class Session extends Entity
 			throw new UserException('Certains paiements n\'ont pas été cochés comme vérifiés');
 		}
 
-		$expected_total = $this->getCashTotal() + $this->open_amount;
-		$error_amount = $amount - $expected_total;
-
-		if ($error_amount != 0 && !$confirm_error) {
-			throw new UserException('Une erreur de caisse existe, il faut confirmer le recomptage de la caisse');
-		}
-
 		$db->begin();
+
+		foreach ($this->listClosingBalances() as $balance) {
+			$value = $user_balances[$balance->id]['amount'] ?? '';
+
+			if (trim($value) === '') {
+				throw new UserException(sprintf('Le solde "%s" ne peut être laissé vide.', $balance->name));
+			}
+
+			$value = Utils::moneyToInteger($value);
+
+			if ($value !== $balance->expected_total
+				&& empty($user_balances[$balance->id]['confirm'])) {
+				throw new UserException(sprintf('Le solde constaté à la clôture ne correspond pas pour "%s", si le recompte est juste, cocher la case pour confirmer l\'erreur.', $balance->name));
+			}
+
+			$b = $this->balance($balance->id);
+			$b->set('close_amount', $value);
+			$b->set('error_amount', $value - $balance->expected_total);
+			$b->save();
+		}
 
 		$db->preparedQuery(POS::sql('UPDATE @PREFIX_sessions SET
 			closed = datetime(\'now\', \'localtime\'),
-			close_amount = ?,
 			close_user = ?,
-			error_amount = ?
-			WHERE id = ?'), [$amount, $user_name, $error_amount, $this->id]);
+			result = ?,
+			nb_tabs = ?
+			WHERE id = ?'),
+			$user_name,
+			$this->getItemsTotal(),
+			$this->getTabsCount(),
+			$this->id()
+		);
 
 		// Update stock
 		$db->preparedQuery(POS::sql('INSERT INTO @PREFIX_products_stock_history (product, change, date, item, event)
@@ -162,7 +195,13 @@ class Session extends Entity
 
 	public function syncWithYearId(int $id, ?int $id_creator = null): bool
 	{
-		return POS::syncAccounting($id_creator, Years::get($id), $this->id()) === 1;
+		$year = Years::get($id);
+
+		if (!$year) {
+			return false;
+		}
+
+		return POS::syncAccounting($id_creator, $year, $this->id()) === 1;
 	}
 
 	public function getPaymentsTotal()
@@ -175,6 +214,11 @@ class Session extends Entity
 	{
 		return DB::getInstance()->firstColumn(POS::sql('SELECT SUM(ti.total) FROM @PREFIX_tabs_items ti
 			INNER JOIN @PREFIX_tabs t ON ti.tab = t.id AND t.session = ?'), $this->id);
+	}
+
+	public function getTabsCount()
+	{
+		return DB::getInstance()->firstColumn(POS::sql('SELECT COUNT(*) FROM @PREFIX_tabs WHERE session = ?'), $this->id);
 	}
 
 	public function listPayments()
@@ -253,13 +297,34 @@ class Session extends Entity
 
 	}
 
-	public function getCashTotal()
+	public function listClosingBalances(): array
 	{
-		return DB::getInstance()->firstColumn(POS::sql('
-			SELECT SUM(amount) FROM @PREFIX_tabs_payments p
-			INNER JOIN @PREFIX_tabs t ON t.id = p.tab
-			INNER JOIN @PREFIX_methods m ON m.id = p.method
-			WHERE t.session = ? AND m.type = ?;'), $this->id, Method::TYPE_CASH);
+		return DB::getInstance()->get(POS::sql('
+			SELECT m.id, m.name, b.open_amount, COALESCE(SUM(p.amount), 0) AS total, COALESCE(SUM(p.amount), 0) + b.open_amount AS expected_total
+			FROM @PREFIX_sessions_balances b
+			INNER JOIN @PREFIX_methods m ON m.id = b.id_method
+			LEFT JOIN @PREFIX_tabs t ON t.session = b.id_session
+			LEFT JOIN @PREFIX_tabs_payments p ON p.tab = t.id AND p.method = m.id
+			WHERE b.id_session = ?
+			GROUP BY m.id;'), $this->id());
+	}
+
+	public function listBalances(): array
+	{
+		return DB::getInstance()->get(POS::sql('
+			SELECT m.id, m.name, m.account, b.open_amount, b.close_amount, b.error_amount
+			FROM @PREFIX_sessions_balances b
+			INNER JOIN @PREFIX_methods m ON m.id = b.id_method
+			WHERE b.id_session = ?;'), $this->id());
+	}
+
+	public function listBalancesWithError(): array
+	{
+		return DB::getInstance()->get(POS::sql('
+			SELECT m.id, m.name, m.account, b.open_amount, b.close_amount, b.error_amount
+			FROM @PREFIX_sessions_balances b
+			INNER JOIN @PREFIX_methods m ON m.id = b.id_method
+			WHERE b.id_session = ? AND b.error_amount IS NOT NULL AND b.error_amount != 0;'), $this->id());
 	}
 
 	public function listTrackedPayment()
@@ -283,6 +348,7 @@ class Session extends Entity
 		$tpl->assign('totals_products', $this->listCountsByProduct());
 		$tpl->assign('total_payments', $this->getPaymentsTotal());
 		$tpl->assign('total_sales', $this->getItemsTotal());
+		$tpl->assign('balances', $this->listBalances());
 
 		$tpl->assign('title', sprintf('Session de caisse n°%d du %s', $this->id, Utils::date_fr($this->opened)));
 

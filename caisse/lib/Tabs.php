@@ -7,6 +7,7 @@ use Paheko\DB;
 use Paheko\DynamicList;
 use Paheko\Users\DynamicFields;
 
+use Paheko\Plugin\Caisse\Entities\Method;
 use Paheko\Plugin\Caisse\Entities\Tab;
 use Paheko\Plugin\Caisse\Entities\TabItem;
 use KD2\DB\EntityManager as EM;
@@ -106,42 +107,72 @@ class Tabs
 		return $out;
 	}
 
-	static public function getUnpaidDebtAmount(?int $user_id = null): int
+	static public function getGlobalDebtBalance(): int
 	{
-		if ($user_id !== null) {
-			$join = 'INNER JOIN @PREFIX_tabs t ON t.id = p.tab';
-			$where = sprintf(' AND t.user_id = %d', $user_id);
+		return self::requestBalance(Method::TYPE_DEBT);
+	}
+
+	static public function requestBalance(int $type, string $conditions = '1', ...$params): int
+	{
+		$db = DB::getInstance();
+		$sql = self::getUserBalancesQuery($type);
+
+		$sql = sprintf('SELECT SUM(amount) FROM (%s) WHERE %s;', $sql, $conditions);
+		return (int) $db->firstColumn($sql, ...$params);
+	}
+
+	static public function getUserBalancesQuery(?int $type = null): string
+	{
+		$sql = '
+			SELECT t.id, t.opened AS date, t.name, t.user_id, SUM(p.amount) * -1 AS amount, p.account, p.method AS id_method,
+				m.name AS method, CASE WHEN p.type = %d THEN \'debt\' ELSE \'payment\' END AS type,
+				1 AS is_settled
+			FROM @PREFIX_tabs t
+			INNER JOIN @PREFIX_tabs_payments p ON p.tab = t.id
+			INNER JOIN @PREFIX_methods m ON p.method = m.id
+			WHERE p.%s
+			GROUP BY p.account, COALESCE(t.user_id, t.name), t.id
+			UNION ALL
+			SELECT t.id, t.opened AS date, t.name, t.user_id, SUM(ti.total) AS amount, ti.account, ti.id_method,
+				m.name AS method, CASE WHEN ti.type = %d THEN \'payoff\' ELSE \'credit\' END AS type,
+				CASE WHEN t.closed IS NULL THEN 0 ELSE 1 END AS is_settled
+			FROM @PREFIX_tabs t
+			INNER JOIN @PREFIX_tabs_items ti ON ti.tab = t.id
+			INNER JOIN @PREFIX_methods m ON ti.id_method = m.id
+			WHERE ti.%s
+			GROUP BY ti.account, COALESCE(t.user_id, t.name), t.id
+			ORDER BY date';
+
+		$types = [];
+		$tabtypes = [];
+
+		if ($type === null || $type === Method::TYPE_DEBT) {
+			$types[] = Method::TYPE_DEBT;
+			$tabtypes[] = TabItem::TYPE_PAYOFF;
 		}
-		else {
-			$join = $where = '';
+
+		if ($type === null || $type === Method::TYPE_CREDIT) {
+			$types[] = Method::TYPE_CREDIT;
+			$tabtypes[] = TabItem::TYPE_CREDIT;
 		}
 
 		$db = DB::getInstance();
-		$sql = POS::sql(sprintf('SELECT SUM(p.amount)
-			FROM @PREFIX_tabs_payments p %s
-			WHERE p.status = %d %s;',
-			$join,
-			Tab::PAYMENT_STATUS_DEBT,
-			$where
-		));
-
-		$due = (int) $db->firstColumn($sql);
-
-		$sql = POS::sql(sprintf('SELECT SUM(p.total)
-			FROM @PREFIX_tabs_items p %s
-			WHERE p.type = %d %s;',
-			$join,
+		$sql = sprintf(POS::sql($sql),
+			Method::TYPE_DEBT,
+			$db->where('type', 'IN', $types),
 			TabItem::TYPE_PAYOFF,
-			$where
-		));
+			$db->where('type', 'IN', $tabtypes)
+		);
 
-		$paid = (int) $db->firstColumn($sql);
-
-		return $due - $paid;
+		return $sql;
 	}
 
-	static public function listDebts(): ?DynamicList
+	static public function listBalances(int $type): ?DynamicList
 	{
+		if ($type !== Method::TYPE_DEBT) {
+			$type = Method::TYPE_CREDIT;
+		}
+
 		$columns = [
 			'date' => [
 				'label' => 'Date',
@@ -150,32 +181,23 @@ class Tabs
 				'label' => 'Nom',
 			],
 			'user_id' => [],
-			'method' => [],
-			'account' => [],
+			'id_method' => [],
 			'amount' => [
-				'label' => 'Montant',
+				'label' => 'Solde',
+				'select' => 'ABS(SUM(amount))',
 			],
 		];
 
-		$tables = '(
-			SELECT MAX(t.opened) AS date, t.name, t.user_id, p.account, SUM(p.amount) - COALESCE((SELECT SUM(ti.total)
-				FROM @PREFIX_tabs_items ti INNER JOIN @PREFIX_tabs tt ON ti.tab = tt.id
-				WHERE ti.type = %d AND tt.user_id = t.user_id AND tt.name = t.name), 0) AS amount
-			FROM @PREFIX_tabs t
-			INNER JOIN @PREFIX_tabs_payments p ON p.tab = t.id
-			LEFT JOIN @PREFIX_methods m ON p.method = m.id
-			WHERE p.status = %d
-			GROUP BY t.user_id, t.name)';
+		$tables = sprintf('(%s)', self::getUserBalancesQuery($type));
 
-		$tables = POS::sql(sprintf($tables, TabItem::TYPE_PAYOFF, Tab::PAYMENT_STATUS_DEBT));
-
-		$list = new DynamicList($columns, $tables, 'amount > 0');
+		$list = new DynamicList($columns, $tables);
 		$list->orderBy('date', true);
+		$list->groupBy('COALESCE(user_id, name)' . ($type === Method::TYPE_DEBT ? ' HAVING SUM(amount) != 0' : ''));
 
 		return $list;
 	}
 
-	static public function listDebtsHistory(?int $user_id = null): DynamicList
+	static public function listBalancesHistory(int $type, ?int $user_id = null): DynamicList
 	{
 		$columns = [
 			'type' => ['label' => 'Type'],
@@ -188,29 +210,19 @@ class Tabs
 			'name' => [
 				'label' => 'Nom',
 			],
-			'user_id' => [],
-			'method' => [],
-			'account' => [],
 			'amount' => [
 				'label' => 'Montant',
+				'select' => $type === Method::TYPE_DEBT ? 'amount * -1' : 'amount',
 			],
+			'method' => [
+				'label' => 'Moyen de paiement',
+			],
+			'user_id' => [],
+			'id_method' => [],
+			'account' => [],
 		];
 
-		$tables = '(
-			SELECT t.id, t.opened AS date, t.name, t.user_id, SUM(p.amount) AS amount, m.name AS method, \'debt\' AS type, p.account
-			FROM @PREFIX_tabs t
-			INNER JOIN @PREFIX_tabs_payments p ON p.tab = t.id
-			LEFT JOIN @PREFIX_methods m ON p.method = m.id
-			WHERE p.status = %d
-			GROUP BY t.id
-			UNION ALL
-			SELECT t.id, t.opened AS date, t.name, t.user_id, SUM(ti.total) AS amount, NULL AS method, \'payoff\' AS type, ti.account
-			FROM @PREFIX_tabs t
-			INNER JOIN @PREFIX_tabs_items ti ON ti.tab = t.id
-			WHERE ti.type = %d
-			GROUP BY t.id)';
-
-		$tables = POS::sql(sprintf($tables, Tab::PAYMENT_STATUS_DEBT, TabItem::TYPE_PAYOFF));
+		$tables = sprintf('(%s)', self::getUserBalancesQuery($type));
 		$conditions = '1';
 
 		if ($user_id) {
@@ -222,4 +234,81 @@ class Tabs
 
 		return $list;
 	}
+
+
+	static public function listStats(int $year, string $period = 'year', ?int $location = null): DynamicList
+	{
+		$columns = [
+			'count' => [
+				'label' => 'Nombre de notes',
+				'select' => 'COUNT(*)',
+			],
+			'products_count' => [
+				'label' => 'Nombre de produits',
+				'select' => 'SUM(ti.qty)',
+			],
+			'price' => [
+				'label' => 'Montant moyen d\'un produit',
+				'select' => 'AVG(ti.price)',
+			],
+			'sum' => [
+				'label' => 'Montant moyen de la note',
+				'select' => 'SUM(ti.total)/COUNT(*)',
+			],
+			'avg_open_time' => [
+				'label' => 'Heure d\'ouverture moyenne',
+				'select' => 'AVG(strftime(\'%H.%M\', t.opened))',
+			],
+			'avg_close_time' => [
+				'label' => 'Heure de fermeture moyenne',
+				'select' => 'AVG(strftime(\'%H\', t.closed)+(strftime(\'%M\', t.closed)/60))',
+			],
+		];
+
+		$list = POS::DynamicList($columns, '@PREFIX_tabs t INNER JOIN @PREFIX_tabs_items ti ON ti.tab = t.id', 'strftime(\'%Y\', t.opened) = :year AND t.closed IS NOT NULL AND ti.total > 0');
+		$list->orderBy('count', true);
+		//$list->groupBy('t.session');
+		$list->setParameter('year', (string)$year);
+		$list->setTitle(sprintf('Notes %d', $year));
+
+		if ($period === 'all' || $period === 'day') {
+			$columns['weekday'] = [
+				'label' => 'Jour de la semaine',
+				'select' => 'CASE strftime(\'%w\', t.opened)
+					WHEN \'0\' THEN \'7-dimanche\'
+					WHEN \'1\' THEN \'1-lundi\'
+					WHEN \'2\' THEN \'2-mardi\'
+					WHEN \'3\' THEN \'3-mercredi\'
+					WHEN \'4\' THEN \'4-jeudi\'
+					WHEN \'5\' THEN \'5-vendredi\'
+					WHEN \'6\' THEN \'6-samedi\'
+					END',
+			];
+		}
+
+		$list->setColumns($columns);
+
+		// List all sales
+		if ($period === 'all') {
+			$columns['date_short'] = [
+				'select' => 'strftime(\'%d/%m/%Y\', t.opened)',
+				'label'  => 'Date',
+			];
+			$columns['session'] = [
+				'select' => 't.session',
+				'label'  => 'Session',
+			];
+			$list->setColumns($columns);
+			$list->orderBy('date_short', true);
+		}
+		POS::applyPeriodToList($list, $period, 't.opened', 't.session');
+
+		if ($location) {
+			$list->addTables(POS::sql('INNER JOIN @PREFIX_sessions s ON s.id = t.session'));
+			$list->addConditions(sprintf('AND s.id_location = %d', $location));
+		}
+
+		return $list;
+	}
+
 }

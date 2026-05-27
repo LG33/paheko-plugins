@@ -26,6 +26,14 @@ CREATE TABLE IF NOT EXISTS @PREFIX_products (
 CREATE INDEX IF NOT EXISTS @PREFIX_products_category ON @PREFIX_products (category);
 CREATE INDEX IF NOT EXISTS @PREFIX_products_code ON @PREFIX_products (code);
 
+CREATE TABLE IF NOT EXISTS @PREFIX_products_links (
+	-- Links between products: add all the linked products to the cart when adding the parent product
+	id_product INTEGER NOT NULL REFERENCES @PREFIX_products (id) ON DELETE CASCADE,
+	id_linked_product INTEGER NOT NULL REFERENCES @PREFIX_products (id) ON DELETE CASCADE
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS @PREFIX_products_links_unique ON @PREFIX_products_links (id_product, id_linked_product);
+
 CREATE TABLE IF NOT EXISTS @PREFIX_products_stock_history (
 	-- History of stock changes for a product
 	id INTEGER NOT NULL PRIMARY KEY,
@@ -75,6 +83,7 @@ CREATE TABLE IF NOT EXISTS @PREFIX_methods (
 	min INTEGER NULL, -- Minimum amount that can be paid using this method
 	max INTEGER NULL, -- Maximum amount that can be paid using this method
 	account TEXT NULL, -- Accounting account code
+	is_default INTEGER NOT NULL DEFAULT 0,
 	enabled INTEGER NOT NULL DEFAULT 1
 );
 
@@ -92,11 +101,21 @@ CREATE TABLE IF NOT EXISTS @PREFIX_sessions (
 	opened TEXT NOT NULL DEFAULT (datetime('now','localtime')),
 	closed TEXT NULL,
 	open_user TEXT NULL,
-	open_amount INTEGER NULL,
-	close_amount INTEGER NULL,
 	close_user TEXT NULL,
+	result INTEGER NULL,
+	nb_tabs INTEGER NULL
+);
+
+CREATE TABLE IF NOT EXISTS @PREFIX_sessions_balances (
+	id INTEGER NOT NULL PRIMARY KEY,
+	id_session INTEGER NOT NULL REFERENCES @PREFIX_sessions (id) ON DELETE CASCADE,
+	id_method INTEGER NULL REFERENCES @PREFIX_methods (id) ON DELETE CASCADE,
+	open_amount INTEGER NOT NULL,
+	close_amount INTEGER NULL,
 	error_amount INTEGER NULL
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS @PREFIX_sessions_balances_unique ON @PREFIX_sessions_balances (id_session, id_method);
 
 CREATE TABLE IF NOT EXISTS @PREFIX_tabs (
 	-- Customer tabs (or carts)
@@ -127,30 +146,36 @@ CREATE TABLE IF NOT EXISTS @PREFIX_tabs_items (
 	type INTEGER NOT NULL DEFAULT 0,
 	pricing INTEGER NOT NULL DEFAULT 0,
 	id_fee INTEGER NULL REFERENCES services_fees (id) ON DELETE SET NULL,
-	id_subscription INTEGER NULL REFERENCES services_users (id) ON DELETE SET NULL
+	id_subscription INTEGER NULL REFERENCES services_users (id) ON DELETE SET NULL,
+	id_parent_item INTEGER NULL REFERENCES @PREFIX_tabs_items (id) ON DELETE CASCADE,
+	id_method INTEGER NULL REFERENCES @PREFIX_methods (id) ON DELETE RESTRICT
 );
 
 CREATE INDEX IF NOT EXISTS @PREFIX_tabs_items_tab ON @PREFIX_tabs_items (tab);
+CREATE INDEX IF NOT EXISTS @PREFIX_tabs_items_type_tab ON @PREFIX_tabs_items(type, tab);
+
 -- Used in saisie_poids module
-CREATE INDEX IF NOT EXISTS @PREFIX_tabs_items_weight ON plugin_pos_tabs_items(product, weight);
+CREATE INDEX IF NOT EXISTS @PREFIX_tabs_items_weight ON @PREFIX_tabs_items(product, weight);
 
 CREATE TABLE IF NOT EXISTS @PREFIX_tabs_payments (
 	-- Payments for a tab
 	id INTEGER NOT NULL PRIMARY KEY,
 	tab INTEGER NOT NULL REFERENCES @PREFIX_tabs (id) ON DELETE CASCADE,
-	method INTEGER NULL REFERENCES @PREFIX_methods (id) ON DELETE RESTRICT,
+	method INTEGER NOT NULL REFERENCES @PREFIX_methods (id) ON DELETE RESTRICT,
 	date TEXT NOT NULL DEFAULT (datetime('now','localtime')),
 	amount INTEGER NOT NULL, -- Can be negative for a refund
 	reference TEXT NULL,
 	account TEXT NULL,
-	status INTEGER NOT NULL DEFAULT 1
+	type INTEGER NOT NULL -- Copy of method type
 );
 
 CREATE INDEX IF NOT EXISTS @PREFIX_tabs_payments_tab ON @PREFIX_tabs_payments (tab);
+CREATE INDEX IF NOT EXISTS @PREFIX_tabs_payments_tab_type ON @PREFIX_tabs_payments(type, tab);
 
-CREATE TRIGGER IF NOT EXISTS @PREFIX_tabs_account1 AFTER UPDATE ON @PREFIX_methods WHEN OLD.account != NEW.account
+CREATE TRIGGER IF NOT EXISTS @PREFIX_tabs_account1 AFTER UPDATE ON @PREFIX_methods
+	WHEN (OLD.account != NEW.account OR OLD.type != NEW.type)
 BEGIN
-	UPDATE @PREFIX_tabs_payments SET account = NEW.account WHERE method = NEW.id;
+	UPDATE @PREFIX_tabs_payments SET account = NEW.account, type = NEW.type WHERE method = NEW.id;
 END;
 
 CREATE TRIGGER IF NOT EXISTS @PREFIX_tabs_account2 AFTER UPDATE ON @PREFIX_categories WHEN OLD.account != NEW.account

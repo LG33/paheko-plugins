@@ -18,28 +18,14 @@ if (!$tab) {
 
 function get_receipt($tab)
 {
-	$items = $tab->listItems();
+	$items = array_map(fn ($a) => $a->asArray(), $tab->listItems());
 	$payments = $tab->listPayments();
 	$remainder = $tab->getRemainder();
-	$options = $tab->listPaymentOptions();
-
-	$eligible = 0;
-
-	foreach ($options as $k => &$option) {
-		if ($option->id != 3) {
-			unset($options[$k]);
-			continue;
-		}
-
-		$eligible = $option->amount;
-	}
-
-	$remainder_after = $remainder - $eligible;
 
 	$tpl = new UserTemplate;
 	$tpl->setSourcePath(PLUGIN_ROOT . '/templates/invoice.skel');
 
-	$tpl->assignArray(compact('items', 'payments', 'tab', 'remainder', 'eligible', 'remainder_after'));
+	$tpl->assignArray(compact('items', 'payments', 'tab', 'remainder'));
 	return $tpl;
 }
 

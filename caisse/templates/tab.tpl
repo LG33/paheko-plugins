@@ -1,13 +1,16 @@
 {include file="_head.tpl"}
 
 <nav class="tabs">
-	{if $debt_total || $session->canAccess($session::SECTION_ACCOUNTING, $session::ACCESS_ADMIN)}
+	{if $debt_balance || $has_credit_methods || $session->canAccess($session::SECTION_ACCOUNTING, $session::ACCESS_ADMIN)}
 	<aside>
-		{if $debt_total}
-			{assign var="debt_total" value=$debt_total|money_currency_text}
-			{linkbutton href="debts.php" label="Ardoises : %s"|args:$debt_total shape="history"}
+		{if $debt_balance}
+			{assign var="debt_total" value=$debt_balance|abs|money_currency_text}
+			{linkbutton href="balances.php?type=2" label="Ardoises : %s"|args:$debt_total shape="history"}
 		{else}
-			{linkbutton href="debts.php" label="Ardoises" shape="history"}
+			{linkbutton href="balances.php?type=2" label="Ardoises" shape="history"}
+		{/if}
+		{if $has_credit_methods}
+			{linkbutton href="balances.php?type=3" label="Porte-monnaie" shape="list-ul"}
 		{/if}
 		{if $session->canAccess($session::SECTION_ACCOUNTING, $session::ACCESS_ADMIN)}
 			{linkbutton href="manage/" label="Gestion et statistiques" shape="settings"}
@@ -19,6 +22,8 @@
 		{linkbutton href="?session=%d&new"|args:$pos_session.id label="Nouvelle note" shape="plus"}
 		{linkbutton href="session.php?id=%d"|args:$pos_session.id label="Résumé" shape="menu"}
 		{linkbutton href="session_close.php?id=%d"|args:$pos_session.id label="Clôturer la caisse" shape="delete"}
+	{else}
+		{linkbutton href="session.php?id=%d"|args:$pos_session.id label="Résumé" shape="menu"}
 	{/if}
 
 	<aside>{linkbutton class="plus" shape="eye" href="" label="Afficher toutes les notes" id="showBtn"}</aside>
@@ -44,7 +49,10 @@
 	<input type="hidden" name="rename_name" />
 </form>
 
+{form_errors}
+
 <section class="pos">
+	<form method="post" action="">
 	<section class="tab">
 		<header>
 			<div class="title">
@@ -62,11 +70,14 @@
 			{/if}
 
 			<div class="actions">
-				<form method="post">
 					<span class="id">Note #{$current_tab.id}</span>
 					{linkbutton title="Reçu" label=null shape="print" target="_dialog" href="./receipt.php?tab=%d"|args:$current_tab.id}
 				{if $current_tab.user_id}
 					{linkbutton href="!users/details.php?id=%d"|args:$current_tab.user_id label="" shape="user" target="_blank" title="Ouvrir la fiche membre"}
+					{if $has_credit_methods}
+						{assign var="label" value=$user_credit|money_text:false}
+						{linkbutton href="balances_history.php?type=3&id_user=%d&id_tab=%d"|args:$current_tab.user_id:$current_tab.id label=$label title="Porte-monnaie" target="_dialog" shape="money"}
+					{/if}
 				{/if}
 				{if !$remainder && !$current_tab.closed}
 					{button type="submit" name="close" label="Clore la note" accesskey="C" shape="lock"}
@@ -77,23 +88,23 @@
 				{elseif !$current_tab.closed}
 					{button type="submit" name="close" label="Clore la note" accesskey="C" shape="lock" disabled="disabled" title="La note ne peut être close, elle n'est pas soldée."}
 				{/if}
+				{if !$current_tab.closed || (!$current_tab.name && !$current_tab.user_id)}
 					{button type="button" label="Renommer" accesskey="R" shape="edit" id="tab_user_rename"}
-				</form>
+				{/if}
 			</div>
 
-			{if $debt}
-			<p class="alert block">
-				Ce membre doit {$debt|money_currency_html|raw}
-				{linkbutton href="debts_history.php?user=%d"|args:$current_tab.user_id label="Historique des ardoises" shape="menu"}
-				{if !$current_tab.closed}
-					{linkbutton href="?id=%d&add_debt=1"|args:$current_tab.id label="Payer cette ardoise" shape="money"}
-				{/if}
-			</p>
+			{if $debt < 0}
+				<p class="alert block">
+					Ce membre doit {$debt|abs|money_currency_html|raw}
+					{linkbutton href="balances_history.php?type=2&user=%d"|args:$current_tab.user_id label="Historique" shape="menu"}
+					{if !$current_tab.closed}
+						{button type="submit" name="add_debt" value="1" label="Payer cette ardoise" shape="money"}
+					{/if}
+				</p>
 			{/if}
 		</header>
 
 		<section class="items">
-			<form method="post">
 			<table class="list">
 				<thead>
 					<th></th>
@@ -111,8 +122,20 @@
 					<th><small class="cat">{$item.category_name}</small> {$item.name}
 						{if !$current_tab.closed}<button title="Cliquer pour renommer" type="submit" value="{$item.name}" name="rename_item[{$item.id}]">{icon shape="edit"}</button>{/if}
 					</th>
-					<td>{if !$current_tab.closed}<input type="submit" name="change_qty[{$item.id}]" value="{$item.qty}" title="Cliquer pour changer la quantité" />{else}{$item.qty}{/if}</td>
-					<td class="money">{if !$current_tab.closed}<button type="submit" title="Cliquer pour changer le prix unitaire" name="change_price[{$item.id}]">{$item.price|escape|money_currency:false}</button>{else}{$item.price|raw|money_currency:false}{/if}</td>
+					<td class="qty">
+						{if !$current_tab.closed && $item->canChangeQty()}
+							<input type="submit" name="change_qty[{$item.id}]" value="{$item.qty}" title="Cliquer pour changer la quantité" />
+						{else}
+							{$item.qty}
+						{/if}
+					</td>
+					<td class="money">
+						{if !$current_tab.closed}
+							<button type="submit" title="Cliquer pour changer le prix unitaire" name="change_price[{$item.id}]">{$item.price|escape|money_currency:false}</button>
+						{else}
+							{$item.price|raw|money_currency:false}
+						{/if}
+					</td>
 					{if $has_weight}
 						<td class="money">
 							{if !$current_tab.closed && $item.weight}
@@ -126,8 +149,8 @@
 					{/if}
 					<td class="money">{$item.total|escape|money_currency:false}</td>
 					<td class="actions">
-						{if !$current_tab.closed}
-							{linkbutton label="" shape="delete" href="?id=%d&delete_item=%d"|args:$current_tab.id,$item.id title="Cliquer pour supprimer la ligne"}
+						{if !$current_tab.closed && !$item.id_parent_item}
+							{button type="submit" label="" shape="delete" name="delete_item" value=$item.id title="Cliquer pour supprimer la ligne"}
 						{/if}
 					</td>
 				</tr>
@@ -156,7 +179,6 @@
 					</tr>
 				</tfoot>
 			</table>
-		</form>
 		</section>
 
 		<section class="payments">
@@ -169,7 +191,7 @@
 					<th>{$payment.method_name}</th>
 					<td>{$payment.amount|escape|money_currency}</td>
 					<td><em>{$payment.reference}</em></td>
-					<td class="actions">{if !$current_tab.closed}{linkbutton shape="delete" href="?id=%d&delete_payment=%d"|args:$current_tab.id,$payment.id title="Supprimer" label=""}{/if}</td>
+					<td class="actions">{if !$current_tab.closed}{button type="submit" shape="delete" label="" name="delete_payment" value=$payment.id title="Supprimer"}{/if}</td>
 				</tr>
 				{/foreach}
 				</tbody>
@@ -178,8 +200,7 @@
 
 		{if !$current_tab.closed}
 			{if $remainder && count($payment_options)}
-			<form method="post" action="" class="payment">
-				<fieldset>
+				<fieldset class="payment">
 					<legend>
 						{if $remainder < 0}
 							Reste {$remainder|escape|abs|money_currency} à rembourser
@@ -192,10 +213,22 @@
 						<dd>
 							<select name="method_id" id="f_method_id">
 								{foreach from=$payment_options item="method"}
-									<option value="{$method.id}" data-amount="{$method.amount|money_raw}" data-type="{$method.type}">
+									<option value="{$method.id}"
+										data-max="{$method.payable|money_raw}"
+										data-type="{$method.type}"
+										{if !$method.payable}
+											disabled="disabled"
+										{elseif $method.is_default}
+											selected="selected"
+										{/if}>
+										{if !$method.payable}
+											&cross;
+										{/if}
 										{$method.name}
-										{if $remainder > $method.amount}
-											(jusqu'à {$method.amount|escape|money_currency:false})
+										{if !$method.payable}
+											({$method.explain})
+										{elseif $remainder > 0 && $remainder > $method.payable}
+											(jusqu'à {$method.payable|escape|money_currency:false})
 										{/if}
 									</option>
 								{/foreach}
@@ -214,7 +247,6 @@
 						{button type="submit" name="pay" label="Enregistrer le paiement" shape="right" class="main" accesskey="P"}
 					</p>
 				</fieldset>
-			</form>
 			{elseif $remainder > 0}
 				<p class="error block">Aucun moyen de paiement possible : certains produits n'ont aucun moyen de paiement défini.</p>
 			{elseif $remainder < 0}
@@ -223,6 +255,7 @@
 		{/if}
 		</section>
 	</section>
+	</form>
 
 	{if !$current_tab.closed}
 	<section class="products">

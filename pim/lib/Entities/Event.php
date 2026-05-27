@@ -6,6 +6,7 @@ use Paheko\Plugin\PIM\ChangesTracker;
 use Paheko\Plugin\PIM\Events;
 use Paheko\Entity;
 use Paheko\UserException;
+use Paheko\Utils;
 use DateTime;
 
 use Sabre\VObject;
@@ -147,8 +148,8 @@ class Event extends Entity
 		$this->set('timezone', $tz);
 
 		if (!empty($qs['start'])) {
-			$start = $this->filterUserDateValue($qs['start']);
-			$end = $this->filterUserDateValue($qs['end']);
+			$start = Utils::parseDateTime($qs['start']);
+			$end = Utils::parseDateTime($qs['end']);
 		}
 
 		$start ??= new \DateTime;
@@ -297,7 +298,7 @@ class Event extends Entity
 		}
 
 		$start = $obj->DTSTART->getDateTime();
-		$end = $obj->DTEND->getDateTime();
+		$end = isset($obj->DTEND) ? $obj->DTEND->getDateTime() : $start;
 
 		// In VEVENT, when event is for a full day, the end date is the next day
 		if (!$obj->DTSTART->hasTime()) {

@@ -29,6 +29,10 @@ body {
 	padding: 0;
 }
 
+main#content {
+	padding: 0;
+}
+
 #chat {
 	display: grid;
 	grid-template-areas: "cc c"
@@ -37,8 +41,6 @@ body {
 	grid-template-columns: 13em 1fr;
 	grid-template-rows: 5em 1fr 5em;
 	height: 100vh;
-	margin-left: -10px;
-	margin-right: -15px;
 }
 
 body.sticky:not(.public) #chat {
@@ -48,10 +50,15 @@ body.sticky:not(.public) #chat {
 body.public:has(#chat) main {
 	max-width: unset;
 	margin: 0;
+	height: calc(100vh - 4.5em);
+}
+
+body.public:has(#chat) {
+	height: 100%;
 }
 
 body.public #chat {
-	height: 85vh;
+	height: 100%;
 	margin: 0;
 }
 
@@ -144,11 +151,13 @@ body.public:has(#chat) footer.public {
 .channels ul li a {
 	display: block;
 	padding: .2em .5em;
+	white-space: pre;
+	text-overflow: ellipsis;
+	overflow: hidden;
 }
 
 .channels ul li.current a {
 	background: rgba(var(--gSecondColor), 0.4);
-	font-weight: bold;
 }
 
 .channels ul li a::before {
@@ -172,6 +181,11 @@ body.public:has(#chat) footer.public {
 }
 .channels ul li.direct a::before {
 	content: "👤";
+}
+
+.channels ul li.new a::after {
+	content: "!";
+	display: block;
 }
 
 .chatbox form {
@@ -581,6 +595,7 @@ nav.reactions button:hover::after {
 	z-index: 2;
 	white-space: pre;
 	border: 1px solid var(--gLightBorderColor);
+	text-align: left;
 }
 
 nav.reactions button:hover::before {

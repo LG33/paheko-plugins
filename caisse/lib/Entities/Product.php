@@ -2,6 +2,7 @@
 
 namespace Paheko\Plugin\Caisse\Entities;
 
+use Paheko\Plugin\Caisse\Categories;
 use Paheko\Plugin\Caisse\POS;
 use Paheko\Plugin\Caisse\Stock;
 use Paheko\DB;
@@ -20,7 +21,7 @@ class Product extends Entity
 	protected int $category = 0;
 	protected string $name = '';
 	protected ?string $description = null;
-	protected int $price = 0;
+	protected int $price;
 	protected ?int $purchase_price = null;
 	protected int $qty = 1;
 	protected ?int $stock = null;
@@ -30,6 +31,8 @@ class Product extends Entity
 	protected bool $archived = false;
 
 	protected ?int $id_fee = null;
+
+	protected ?Category $_category = null;
 
 	const WEIGHT_DISABLED = null;
 	const WEIGHT_REQUIRED = -1;
@@ -83,7 +86,7 @@ class Product extends Entity
 			$code = new BarCode($source['code']);
 
 			if (!$code->verify()) {
-				throw new ValidationException('Code barre invalide. Vérifiez s\'il ne manque pas un chiffre. Le code barre doit comporter 13 chiffres.');
+				throw new ValidationException('Code barre invalide. Vérifiez s\'il ne manque pas un chiffre. Le code barre doit comporter 8 ou 13 chiffres.');
 			}
 
 			$source['code'] = $code->get();
@@ -102,8 +105,13 @@ class Product extends Entity
 			return '';
 		}
 
-		$code = new BarCode($this->code);
-		return $code->toSVG();
+		try {
+			$code = new BarCode($this->code);
+			return $code->toSVG();
+		}
+		catch (\LogicException $e) {
+			return '';
+		}
 	}
 
 	public function setMethods(array $methods): void
@@ -119,12 +127,6 @@ class Product extends Entity
 		}
 
 		$db->commit();
-	}
-
-	public function enableAllMethodsExceptDebt(): void
-	{
-		$sql = POS::sql('INSERT INTO @PREFIX_products_methods (product, method) SELECT ?, id FROM @PREFIX_methods WHERE type != ?;');
-		DB::getInstance()->preparedQuery($sql, $this->id(), Method::TYPE_DEBT);
 	}
 
 	public function getHistoryList(bool $only_events = false): DynamicList
@@ -150,5 +152,61 @@ class Product extends Entity
 	public function getImagesPath(): string
 	{
 		return sprintf('p/public/%s/%d', 'caisse', $this->id());
+	}
+
+	public function category(): Category
+	{
+		$this->_category ??= Categories::get($this->category);
+		return $this->_category;
+	}
+
+	public function isLinked(): bool
+	{
+		if (!$this->exists()) {
+			return false;
+		}
+
+		return EM::getInstance(self::class)->DB()->test(POS::SQL('@PREFIX_products_links'), 'id_linked_product = ?', $this->id());
+	}
+
+	public function listLinkedProducts(): array
+	{
+		if (!$this->exists()) {
+			return [];
+		}
+
+		return EM::getInstance(self::class)->all(POS::sql('SELECT p.*
+			FROM @TABLE AS p
+			INNER JOIN @PREFIX_products_links AS d ON p.id = d.id_linked_product
+			WHERE d.id_product = ?
+			GROUP BY p.id;'), $this->id());
+	}
+
+	public function listLinkedProductsAssoc(): array
+	{
+		if (!$this->exists()) {
+			return [];
+		}
+
+		return EM::getInstance(self::class)->DB()->getAssoc(POS::sql('SELECT p.id, p.name
+			FROM @PREFIX_products AS p
+			INNER JOIN @PREFIX_products_links AS d ON p.id = d.id_linked_product
+			WHERE d.id_product = ?
+			GROUP BY p.id;'), $this->id());
+	}
+
+	public function setLinkedProducts(array $ids): void
+	{
+		$db = EM::getInstance(self::class)->DB();
+		$db->begin();
+
+		$db->preparedQuery(POS::sql('DELETE FROM @PREFIX_products_links WHERE id_product = ?;'), $this->id());
+
+		foreach ($ids as $id) {
+			$db->insert(POS::tbl('products_links'), ['id_product' => $this->id(), 'id_linked_product' => (int)$id]);
+		}
+
+		$db->commit();
+
 	}
 }

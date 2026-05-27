@@ -6,6 +6,7 @@ use Paheko\Entities\Plugin;
 use Paheko\Entities\Users\User;
 use Paheko\Users\Session;
 use Paheko\DB;
+use Paheko\UserException;
 use Paheko\Utils;
 use Paheko\Users\Users;
 
@@ -72,7 +73,7 @@ class PIM
 		return Users::get((int)$login);
 	}
 
-	static public function verifyAccess(Session $session = null): void
+	static public function verifyAccess(?Session $session = null): void
 	{
 		$session ??= Session::getInstance();
 

@@ -54,15 +54,35 @@ class Stock
 		return new StockEvent;
 	}
 
-	static public function listEvents(): array
+	static public function getEventsList(): DynamicList
 	{
-		return EM::getInstance(StockEvent::class)->all('SELECT * FROM @TABLE ORDER BY date DESC;');
+		$columns = [
+			'id' => [],
+			'date' => [
+				'label' => 'Date',
+			],
+			'type' => [
+				'label' => 'Type',
+			],
+			'label' => [
+				'label' => 'Événement',
+			]
+		];
+
+		$list = new DynamicList($columns, POS::tbl('stock_events'));
+		$list->orderBy('date', true);
+
+		$list->setModifier(function (&$row) {
+			$row->type_label = StockEvent::TYPES[$row->type];
+		});
+
+		return $list;
 	}
 
 	static public function listCategoriesValue(): array
 	{
 		$db = EM::getInstance(StockEvent::class)->DB();
-		$list = $db->getGrouped(POS::sql('SELECT c.id, c.name AS label, COUNT(p.id) AS stock, SUM(p.stock * p.price) AS sale_value, SUM(p.stock * p.purchase_price) AS stock_value
+		$list = $db->getGrouped(POS::sql('SELECT c.id, c.name AS label, SUM(p.stock) AS stock, SUM(CASE WHEN p.stock >= 0 THEN p.stock * p.price ELSE 0 END) AS sale_value, SUM(CASE WHEN p.stock >= 0 THEN p.stock * p.purchase_price ELSE 0 END) AS stock_value
 			FROM @PREFIX_products p
 			INNER JOIN @PREFIX_categories c ON c.id = p.category
 			WHERE p.stock IS NOT NULL

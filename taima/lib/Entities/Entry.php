@@ -5,6 +5,7 @@ namespace Paheko\Plugin\Taima\Entities;
 use Paheko\Entity;
 use Paheko\Form;
 use Paheko\Users\Users;
+use Paheko\Utils;
 
 use KD2\DB\Date;
 
@@ -14,7 +15,7 @@ class Entry extends Entity
 
 	protected int $id;
 	protected ?int $user_id;
-	protected ?int $task_id;
+	protected ?int $task_id = null;
 	protected Date $date;
 	protected ?string $notes;
 	protected ?int $duration;
@@ -25,10 +26,6 @@ class Entry extends Entity
 	public function selfCheck(): void
 	{
 		parent::selfCheck();
-
-		if (!$this->task_id) {
-			$this->task_id = null;
-		}
 
 		$this->assert(!(is_null($this->duration) && is_null($this->timer_started)), 'Duration cannot be NULL if timer is not running');
 	}
@@ -63,35 +60,43 @@ class Entry extends Entity
 
 	public function setDateString(string $date)
 	{
-		$this->setDate($this->filterUserDateValue($date, Date::class));
+		if (trim($date) === '') {
+			return;
+		}
+
+		$ts = Utils::parseDateTime($date, Date::class);
+
+		$this->assert($ts !== null, 'Invalid date string: ' . $date);
+		$this->setDate($ts);
 	}
 
-	public function setDuration(string $duration = null)
+	public function setDuration(?string $duration = null): bool
 	{
 		$duration = trim($duration);
 
 		if ($duration === '') {
 			$this->set('duration', null);
 			$this->start();
-			return;
+			return true;
 		}
 
-		if (preg_match('/^(\d+)[h:](\d*)$/', $duration, $match)) {
+		if (preg_match('/^(\d+)[h:](\d*)(?::\d+)?$/', $duration, $match)) {
 			$minutes = (int) $match[1] * 60 + (int) $match[2];
 		}
 		elseif (preg_match('/^(\d+)(?:[.,](\d*))?$/', $duration, $match)) {
 			$minutes = (int) $match[1] * 60;
 
 			if (!empty($match[2])) {
-				$minutes += 60 * ((int) $match[2] / 100);
+				$minutes += 60 * (str_pad($match[2], 2, '0', STR_PAD_RIGHT)  / 100);
 			}
 		}
 		else {
-			throw new \InvalidArgumentException('Invalid duration: ' . $duration);
+			return false;
 		}
 
 		$this->set('timer_started', null);
 		$this->set('duration', (int) $minutes);
+		return true;
 	}
 
 	public function start(): void

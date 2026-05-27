@@ -39,20 +39,29 @@ $form->runIf(qg('code') !== null, function () use ($current_pos_session, &$tab) 
 	Utils::redirect(Utils::plugin_url(['file' => 'tab.php', 'query' => 'id=' . $tab->id]));
 });
 
-if (!empty($_GET['payoff_amount']) && !empty($_GET['payoff_account'])) {
+if ($tab) {
+	$url = Utils::plugin_url(['file' => 'tab.php', 'query' => 'id=' . $tab->id]);
+	$csrf_key = null;
+}
+
+if (!empty($_GET['payoff']) && !empty($_GET['id_method'])) {
 	if (!$current_pos_session) {
 		throw new UserException('Aucune session de caisse n\'est ouverte.');
 	}
 
-	if (!empty($_GET['payoff_user'])) {
-		$tab = $current_pos_session->findOpenTabByUser((int) $_GET['payoff_user']);
+	if (!empty($_GET['id_user'])) {
+		$tab = $current_pos_session->findOpenTabByUser((int) $_GET['id_user']);
 	}
 
 	if (!$tab) {
-		$tab = $current_pos_session->openTab(intval($_GET['payoff_user']) ?: null);
+		$tab = $current_pos_session->openTab(intval($_GET['id_user']) ?: null);
+
+		if (!empty($_GET['name']) && !$tab->user_id) {
+			$tab->rename($_GET['name'], null);
+		}
 	}
 
-	$tab->addDebt($_GET['payoff_account'], (int) $_GET['payoff_amount']);
+	$tab->addPayoff((int) $_GET['payoff'], (int)$_GET['id_method']);
 
 	Utils::redirect(Utils::plugin_url(['file' => 'tab.php', 'query' => 'id=' . $tab->id()]));
 }
@@ -61,58 +70,66 @@ elseif (null !== qg('new')) {
 	Utils::redirect(Utils::plugin_url(['file' => 'tab.php', 'query' => 'id=' . $tab->id()]));
 }
 elseif ($tab) {
-	if (!empty($_POST['add_item'])) {
+	$form->runIf('rename_name', function () use ($tab) {
+		$tab->rename($_POST['rename_name'], intval($_POST['rename_id'] ?? 0) ?: null);
+	}, $csrf_key, $url);
+}
+
+if ($tab && !$current_pos_session->closed) {
+	$form->runIf(!empty($_POST['add_item']) && is_array($_POST['add_item']), function () use ($tab) {
 		$tab->addItem((int)key($_POST['add_item']), current($_POST['add_item']));
-		reload();
-	}
-	elseif (!empty($_GET['add_debt'])) {
-		$tab->addUserDebt();
-		Utils::redirect(Utils::plugin_url(['file' => 'tab.php', 'query' => 'id=' . $tab->id]));
-	}
-	elseif (qg('delete_item')) {
-		$tab->removeItem((int)qg('delete_item'));
-		Utils::redirect(Utils::plugin_url(['file' => 'tab.php', 'query' => 'id=' . $tab->id]));
-	}
-	elseif (!empty($_POST['change_qty'])) {
+	}, $csrf_key, $url);
+
+	$form->runIf('add_debt', function () use ($tab) {
+		$tab->addUserDebtAsPayoff();
+	}, $csrf_key, $url);
+
+	$form->runIf('delete_item', function () use ($tab) {
+		$tab->removeItem((int)$_POST['delete_item']);
+	}, $csrf_key, $url);
+
+	$form->runIf('change_qty', function () use ($tab) {
 		$tab->updateItemQty((int)key($_POST['change_qty']), (int)current($_POST['change_qty']));
-		reload();
-	}
-	elseif (!empty($_POST['change_weight'])) {
+	}, $csrf_key, $url);
+
+	$form->runIf('change_weight', function () use ($tab) {
 		$tab->updateItemWeight((int)key($_POST['change_weight']), current($_POST['change_weight']));
-		reload();
-	}
-	elseif (!empty($_POST['change_price'])) {
+	}, $csrf_key, $url);
+
+	$form->runIf('change_price', function () use ($tab) {
 		$tab->updateItemPrice((int)key($_POST['change_price']), current($_POST['change_price']));
-		reload();
-	}
-	elseif (!empty($_POST['pay'])) {
-		$tab->pay((int)$_POST['method_id'], get_amount(f('amount')), $_POST['reference'], $plugin->getConfig('auto_close_tabs') ?? false, $plugin->getConfig('debt_account'));
-		reload();
-	}
-	elseif (qg('delete_payment')) {
-		$tab->removePayment((int) qg('delete_payment'));
-		Utils::redirect(Utils::plugin_url(['file' => 'tab.php', 'query' => 'id=' . $tab->id]));
-	}
-	elseif (!empty($_POST['rename_name'])) {
-		$tab->rename($_POST['rename_name'], (int) f('rename_id') ?: null);
-		reload();
-	}
-	elseif (!empty($_POST['rename_item'])) {
+	}, $csrf_key, $url);
+
+	$form->runIf('pay', function () use ($tab, $plugin) {
+		$tab->pay(intval($_POST['method_id'] ?? 0),
+			get_amount($_POST['amount'] ?? 0),
+			$_POST['reference'] ?? null,
+			$plugin->getConfig('auto_close_tabs') ?? false,
+			$plugin->getConfig('force_tab_name') ?? false
+		);
+	}, $csrf_key, $url);
+
+	$form->runIf('delete_payment', function () use ($tab) {
+		$tab->removePayment((int) $_POST['delete_payment']);
+	}, $csrf_key, $url);
+
+	$form->runIf('rename_item', function () use ($tab) {
 		$tab->renameItem((int) key($_POST['rename_item']), current($_POST['rename_item']));
-		reload();
-	}
-	elseif (!empty($_POST['close'])) {
-		$tab->close();
-		reload();
-	}
-	elseif (!empty($_POST['reopen'])) {
+	}, $csrf_key, $url);
+
+	$form->runIf('close', function () use ($tab, $plugin) {
+		$tab->close($plugin->getConfig('force_tab_name') ?? false);
+	}, $csrf_key, $url);
+
+	$form->runIf('reopen', function () use ($tab) {
 		$tab->reopen();
-		reload();
-	}
-	elseif (!empty($_POST['delete'])) {
+	}, $csrf_key, $url);
+
+	$form->runIf('delete', function () use ($tab) {
+		$id = $tab->session;
 		$tab->delete();
-		Utils::redirect(Utils::plugin_url(['file' => 'tab.php', 'query' => 'session=' . $current_pos_session->id()]));
-	}
+		Utils::redirect(Utils::plugin_url(['file' => 'tab.php', 'query' => 'session=' . $id]));
+	}, $csrf_key);
 }
 
 $tabs = Tabs::listForSession($current_pos_session->id);
@@ -120,9 +137,11 @@ $tabs = Tabs::listForSession($current_pos_session->id);
 $tpl->assign('pos_session', $current_pos_session);
 $tpl->assign('tab_id', $tab ? $tab->id : null);
 
-$tpl->assign('products_categories', Products::listBuyableByCategory());
+$tpl->assign('products_categories', Products::listBuyableByCategory($current_pos_session->id_location));
 $tpl->assign('has_weight', Products::checkUserWeightIsRequired());
 $tpl->assign('tabs', $tabs);
+$has_credit_methods = Methods::hasCreditMethods();
+$tpl->assign('has_credit_methods', $has_credit_methods);
 
 if ($tab) {
 	$tpl->assign('current_tab', $tab);
@@ -132,10 +151,14 @@ if ($tab) {
 	$tpl->assign('payment_options', $tab->listPaymentOptions());
 	$tpl->assign('debt', $tab->getUserDebt());
 	$tpl->assign('missing_user', $tab->isUserIdMissing());
+
+	if ($has_credit_methods) {
+		$tpl->assign('user_credit', $tab->getUserCredit());
+	}
 }
 
 $tpl->assign('selected_cat', qg('cat'));
-$tpl->assign('debt_total', Tabs::getUnpaidDebtAmount());
+$tpl->assign('debt_balance', Tabs::getGlobalDebtBalance());
 
 $tpl->assign('title', 'Caisse ouverte le ' . Utils::date_fr($current_pos_session->opened));
 $tpl->display(PLUGIN_ROOT . '/templates/tab.tpl');
